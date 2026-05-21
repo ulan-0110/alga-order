@@ -35,33 +35,49 @@ def normalize_strict(name):
     return re.sub(r'[^\w\d]', '', str(name).lower())
 
 # ==========================================
-# БЛОК БЕЗОПАСНОСТИ
+# БЛОК БЕЗОПАСНОСТИ (3 РАЗДЕЛЬНЫХ ДОСТУПА)
 # ==========================================
 def check_password():
     if "authenticated" not in st.session_state:
         st.session_state["authenticated"] = False
+        st.session_state["username"] = "" # Храним имя текущего пользователя
+        
     if st.session_state["authenticated"]: return True
 
     st.title("🔒 Вход в систему Alga Distribution")
-    login_input = st.text_input("Логин", key="login_field")
+    login_input = st.text_input("Логин", key="login_field").strip().lower()
     password_input = st.text_input("Пароль", type="password", key="password_field")
     
     if st.button("Войти"):
-        try:
-            target_login = st.secrets.get("ALGA_LOGIN", "alga_team")
-            target_password = st.secrets.get("ALGA_PASSWORD", "alga2026")
-        except:
-            target_login = "alga_team"
-            target_password = "alga2026"
-            
-        if login_input == target_login and password_input == target_password:
+        # Карта пользователей: Логин -> Пароль
+        # Сюда ты можешь вписать любые свои 3 логина и пароля
+        users_credentials = {
+            "ulan": "alga2026",
+            "Osh": "alga_osh",
+            "Bishkek": "alga_bishkek"
+        }
+        
+        # Если в облаке в Secrets прописаны кастомные доступы, они заменят дефолтные
+        if hasattr(st, "secrets"):
+            for k, v in st.secrets.items():
+                if k.startswith("USER_"):
+                    # Формат в Secrets: USER_ulan = "пароль"
+                    u_name = k.replace("USER_", "").lower()
+                    users_credentials[u_name] = str(v)
+
+        if login_input in users_credentials and password_input == users_credentials[login_input]:
             st.session_state["authenticated"] = True
+            st.session_state["username"] = login_input # Запоминаем, кто именно вошел!
             st.rerun()
         else:
             st.error("❌ Неверный логин или пароль!")
     return False
 
 if not check_password(): st.stop()
+
+# Берем имя пользователя для названия индивидуального файла бэкапа
+current_user = st.session_state["username"]
+backup_filename = f"{current_user}_order_state.json"
 
 # ==========================================
 # ОБЛАЧНЫЕ ФУНКЦИИ БАЗЫ ЗНАНИЙ
@@ -102,14 +118,10 @@ def check_and_cache_template():
                 
                 if not name: continue
 
-                # Проверяем цену в текущей строке
                 parsed_price = parse_number(row[6], float)
-                
-                # Если нашли любую цену > 0 — это новая базовая цена для идущих ниже товаров
                 if parsed_price > 0:
                     current_price = parsed_price 
                 
-                # Если у текущей строки нет цены, берем унаследованную сверху
                 item_price = parsed_price if parsed_price > 0 else current_price
                 box_size = parse_number(row[2], int)
 
@@ -123,16 +135,17 @@ def check_and_cache_template():
         with open("template_cache.json", "w", encoding="utf-8") as f:
             json.dump(cache_data, f, ensure_ascii=False, indent=4)
     except Exception as e:
-        log_error("check_and_cache_template", e)
+        check_and_cache_template()
 
 # ==========================================
 # ИНТЕРФЕЙС
 # ==========================================
 col_t1, col_t2 = st.columns([9, 1])
-with col_t1: st.title("📊 Умный шлюз заказов SmartOrder Web")
+with col_t1: st.title(f"📊 SmartOrder Web — Панель [{current_user.upper()}]")
 with col_t2:
     if st.button("🚪 Выйти"):
         st.session_state["authenticated"] = False
+        st.session_state["username"] = ""
         st.rerun()
 
 tab1, tab2 = st.tabs(["📥 Расшифровка входящего заказа", "📤 Набрать новый заказ для завода"])
@@ -150,6 +163,10 @@ with tab1:
                 
             mapping_df = load_mapping_cloud()
             existing_1c_items = sorted(mapping_df["Номенклатура АлгаДистрибьюшн факт"].dropna().unique().tolist())
+            
+            if "[ИГНОР_КАТЕГОРИЯ]" in existing_1c_items:
+                existing_1c_items.remove("[ИГНОР_КАТЕГОРИЯ]")
+                
             mapping_dict = {normalize_strict(row["Наименование от производителя"]): str(row["Номенклатура АлгаДистрибьюшн факт"]).strip() for _, row in mapping_df.iterrows()}
             
             current_price = 0.0
@@ -171,22 +188,25 @@ with tab1:
                 if parsed_price > 0:
                     current_price = parsed_price 
                 
-                # ЖЕСТКИЙ ФИЛЬТР: категория или пустая строка — мимо
+                factory_norm_name = normalize_strict(name)
+                our_name = mapping_dict.get(factory_norm_name, "")
+                
+                if our_name == "[ИГНОР_КАТЕГОРИЯ]":
+                    continue
+                
                 if box_size == 0 or boxes == 0:
                     continue 
 
                 pcs = parse_number(row.iloc[3] if len(row) > 3 else 0, int)
                 item_price = parsed_price if parsed_price > 0 else current_price
                     
-                factory_norm_name = normalize_strict(name)
-                
-                if factory_norm_name not in mapping_dict:
+                if not our_name:
                     if not any(p['norm_name'] == factory_norm_name for p in unknown_products):
                         unknown_products.append({"name": name, "norm_name": factory_norm_name, "row_num": idx + 1})
                         
-                our_name = mapping_dict.get(factory_norm_name, f"[НЕОПРЕДЕЛЕН] {name}")
+                display_1c_name = our_name if our_name else f"[НЕОПРЕДЕЛЕН] {name}"
                 processed_rows.append({
-                    "Ваша Номенклатура (1С)": our_name, 
+                    "Ваша Номенклатура (1С)": display_1c_name, 
                     "Наименование Завода": name, 
                     "Ящиков": boxes, 
                     "Штук в ящ": box_size, 
@@ -196,18 +216,28 @@ with tab1:
                 })
             
             if unknown_products:
-                st.error(f"⚠️ Найдено {len(unknown_products)} новых позиций в файле.")
+                st.error(f"⚠️ Найдено {len(unknown_products)} позиций в заказе, которых нет в базе 1С.")
                 for i, prod_info in enumerate(unknown_products[:3]):
-                    st.info(f"🏭 В файле заказа: `{prod_info['name']}`")
-                    selected_1c_name = st.selectbox("Связать с номенклатурой 1С:", options=["-- Выбрать из существующих в 1С --"] + existing_1c_items, key=f"sel_{i}")
-                    manual_1c_name = st.text_input("Или ввести новое имя вручную:", key=f"man_{i}")
+                    st.markdown("---")
+                    st.info(f"🏭 В файле заказа строка {prod_info['row_num']}: `{prod_info['name']}`")
                     
-                    if st.button("Запомнить связку", key=f"btn_{i}"):
-                        final_1c_name = manual_1c_name.strip() if manual_1c_name.strip() else (selected_1c_name if selected_1c_name != "-- Выбрать из существующих в 1С --" else "")
+                    category_option = "-- 🛑 ЭТО КАТЕГОРИЯ (Пропустить и запомнить как заголовок) --"
+                    options_list = [category_option, "-- Выбрать из существующих в 1С --"] + existing_1c_items
+                    
+                    selected_1c_name = st.selectbox("Что это за позиция?:", options=options_list, key=f"sel_{i}")
+                    manual_1c_name = st.text_input("Или ввести новое имя 1С вручную (если это реальный товар):", key=f"man_{i}")
+                    
+                    if st.button("Зафиксировать выбор", key=f"btn_{i}"):
+                        if selected_1c_name == category_option:
+                            final_1c_name = "[ИГНОР_КАТЕГОРИЯ]"
+                        else:
+                            final_1c_name = manual_1c_name.strip() if manual_1c_name.strip() else (selected_1c_name if selected_1c_name != "-- Выбрать из существующих в 1С --" else "")
+                        
                         if final_1c_name:
                             save_new_pair_cloud(prod_info['name'], final_1c_name)
-                            st.success(f"✅ Связка зафиксирована! Обновите страницу.")
+                            st.success(f"✅ Выбор зафиксирован!")
                             st.rerun()
+                st.stop()
             else:
                 if processed_rows:
                     df_res = pd.DataFrame(processed_rows)
@@ -232,13 +262,15 @@ with tab1:
 # ------------------------------------------
 with tab2:
     st.header("Единый бланк заказа")
-    st.write("Скролл зафиксирован. Заполняйте ящики в таблице — корзина ниже сформируется автоматически.")
+    st.write("Скролл зафиксирован. Заполняйте ящики в таблице — автосохранение работает раздельно для каждого менеджера.")
     
     if st.button("🔄 Сбросить и обновить справочник цен из template.xlsx"):
         with st.spinner("Перечитываем и пересчитываем файл шаблона..."):
             check_and_cache_template()
-            st.cache_data.clear()
-            st.success("База цен успешно обновлена!")
+            st.cache_data.clear() 
+            if os.path.exists(backup_filename):
+                os.remove(backup_filename) # Чистим сейв ТЕКУЩЕГО пользователя при сбросе
+            st.success("База цен и связок успешно обновлена!")
             st.rerun()
 
     if not os.path.exists("template_cache.json"):
@@ -254,9 +286,19 @@ with tab2:
                 
             mapping_df = load_mapping_cloud()
             mapping_clean = mapping_df.dropna(subset=["Номенклатура АлгаДистрибьюшн факт", "Наименование от производителя"])
+            mapping_clean = mapping_clean[mapping_clean["Номенклатура АлгаДистрибьюшн факт"] != "[ИГНОР_КАТЕГОРИЯ]"]
             mapping_clean = mapping_clean.drop_duplicates(subset=["Номенклатура АлгаДистрибьюшн факт"])
             mapping_clean = mapping_clean.sort_values(by="Номенклатура АлгаДистрибьюшн факт")
             
+            # ЗАГРУЗКА ИНДИВИДУАЛЬНОГО АВТОСОХРАНЕНИЯ МЕНЕДЖЕРА
+            saved_boxes_dict = {}
+            if os.path.exists(backup_filename):
+                try:
+                    with open(backup_filename, "r", encoding="utf-8") as sf:
+                        saved_boxes_dict = json.load(sf)
+                except:
+                    pass
+
             table_rows = []
             for _, row in mapping_clean.iterrows():
                 our_name = str(row["Номенклатура АлгаДистрибьюшн факт"]).strip()
@@ -265,12 +307,15 @@ with tab2:
                 
                 factory_info = factory_cache_dict.get(f_name_key, {"box_size": 0, "price": 0.0})
                 
+                # Подтягиваем сохраненное количество ящиков из личного бэкапа менеджера
+                default_boxes = int(saved_boxes_dict.get(our_name, 0))
+                
                 table_rows.append({
                     "Номенклатура (1С)": our_name,
                     "Товар завода": f_name,
                     "В коробке (шт)": int(factory_info["box_size"]),
                     "Цена ($)": float(factory_info["price"]),
-                    "Заказ (Ящиков)": 0
+                    "Заказ (Ящиков)": default_boxes
                 })
                 
             df_form = pd.DataFrame(table_rows)
@@ -279,7 +324,7 @@ with tab2:
                 st.warning("⚠️ В файле mapping.csv пока нет связей.")
                 st.stop()
             
-            # ТАБЛИЦА ВВОДА (Чистая, без прыжков)
+            # ТАБЛИЦА ВВОДА
             edited_df = st.data_editor(
                 df_form,
                 column_config={
@@ -294,6 +339,13 @@ with tab2:
                 key="super_stable_editor", 
                 hide_index=True
             )
+
+            # ==========================================
+            # ДВИЖОК ИНДИВИДУАЛЬНОГО АВТОСОХРАНЕНИЯ
+            # ==========================================
+            current_boxes_state = {row["Номенклатура (1С)"]: int(row["Заказ (Ящиков)"]) for _, row in edited_df.iterrows()}
+            with open(backup_filename, "w", encoding="utf-8") as sf:
+                json.dump(current_boxes_state, sf, ensure_ascii=False)
 
             # МГНОВЕННЫЙ РАСЧЕТ ИТОГОВ КОРЗИНЫ
             edited_df["Заказ (Ящиков)"] = pd.to_numeric(edited_df["Заказ (Ящиков)"]).fillna(0).astype(int)
@@ -347,6 +399,10 @@ with tab2:
                                 wb.save(out_buf)
                                 out_buf.seek(0)
                                 st.session_state["excel_ready_bytes"] = out_buf.getvalue()
+                                
+                                # Автоматически стираем личный бэкап, так как текущий заказ собран!
+                                if os.path.exists(backup_filename):
+                                    os.remove(backup_filename)
                             except Exception as e:
                                 log_error("Генерация_Завода", e)
                                 st.error("Ошибка записи данных в Excel.")
@@ -356,7 +412,7 @@ with tab2:
                     st.download_button(
                         label="📥 СКАЧАТЬ ГОТОВЫЙ ФАЙЛ ДЛЯ ЗАВОДА",
                         data=st.session_state["excel_ready_bytes"],
-                        file_name="Сформированный_Заказ_Завод_Web.xlsx",
+                        file_name=f"Заказ_Завод_{current_user.upper()}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
             else:
