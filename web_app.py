@@ -237,6 +237,7 @@ with tab2:
     if st.button("🔄 Сбросить и обновить справочник цен из template.xlsx"):
         with st.spinner("Перечитываем и пересчитываем файл шаблона..."):
             check_and_cache_template()
+            st.cache_data.clear()
             st.success("База цен успешно обновлена!")
             st.rerun()
 
