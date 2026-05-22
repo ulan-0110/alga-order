@@ -53,8 +53,8 @@ def check_password():
         # Сюда ты можешь вписать любые свои 3 логина и пароля
         users_credentials = {
             "ulan": "alga2026",
-            "Osh": "alga_osh",
-            "Bishkek": "alga_bishkek"
+            "osh": "alga_osh",
+            "bishkek": "alga_bishkek"
         }
         
         # Если в облаке в Secrets прописаны кастомные доступы, они заменят дефолтные
