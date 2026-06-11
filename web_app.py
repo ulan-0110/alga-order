@@ -323,7 +323,8 @@ with tab2:
                             else:
                                 df_up = pd.read_excel(tab2_uploaded_file, header=None)
                             
-                            our_1c_norm_dict = {normalize_strict(row["Номенклатура АлгаДистрибьюшн факт"]): str(row["Номенклатура АлгаДистрибьюшн факт"]).strip() for _, row in mapping_clean.iterrows()}
+                            # Берем только первые 8 символов (артикул) от нормализованного имени из базы 1С
+                            our_1c_norm_dict = {normalize_strict(row["Номенклатура АлгаДистрибьюшн факт"])[:8]: str(row["Номенклатура АлгаДистрибьюшн факт"]).strip() for _, row in mapping_clean.iterrows()}
                             
                             # ЖЕСТКАЯ ОЧИСТКА КОРЗИНЫ ПЕРЕД ИМПОРТОМ НОВОГО ФАЙЛА
                             saved_boxes_dict.clear()
@@ -335,7 +336,9 @@ with tab2:
                                 if not u_name or u_name.lower() in ["наименование", "товар", "итого", "всего", "номенклатура", "nan"]: 
                                     continue
                                 
-                                u_norm = normalize_strict(u_name)
+                                # Так же берем только 8 символов у товара из загруженного файла
+                                u_norm = normalize_strict(u_name)[:8]
+                                
                                 if u_norm in our_1c_norm_dict:
                                     exact_1c_name = our_1c_norm_dict[u_norm]
                                     u_boxes = parse_number(r.iloc[1] if len(r) > 1 else 0, int)
