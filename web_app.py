@@ -270,6 +270,8 @@ with tab2:
             st.cache_data.clear() 
             if os.path.exists(backup_filename):
                 os.remove(backup_filename) # Чистим сейв ТЕКУЩЕГО пользователя при сбросе
+            if "last_processed_file_key" in st.session_state:
+                del st.session_state["last_processed_file_key"]
             st.success("База цен и связок успешно обновлена!")
             st.rerun()
 
@@ -290,6 +292,12 @@ with tab2:
             mapping_clean = mapping_clean.drop_duplicates(subset=["Номенклатура АлгаДистрибьюшн факт"])
             mapping_clean = mapping_clean.sort_values(by="Номенклатура АлгаДистрибьюшн факт")
             
+            # ==========================================
+            # АВТОМАТИЧЕСКАЯ ЗАГРУЗКА ЗАКАЗА ИЗ 1С
+            # ==========================================
+            st.markdown("### 📥 Автоматическое заполнение из файла 1С")
+            tab2_uploaded_file = st.file_uploader("Перетащите сюда Excel или CSV файл с заказом 1С", type=["xlsx", "xls", "csv"], key="tab2_file_uploader")
+            
             # ЗАГРУЗКА ИНДИВИДУАЛЬНОГО АВТОСОХРАНЕНИЯ МЕНЕДЖЕРА
             saved_boxes_dict = {}
             if os.path.exists(backup_filename):
@@ -299,6 +307,58 @@ with tab2:
                 except:
                     pass
 
+            if tab2_uploaded_file is not None:
+                file_key = f"processed_{tab2_uploaded_file.name}_{tab2_uploaded_file.size}"
+                # Проверяем, чтобы файл обрабатывался строго один раз при загрузке, не блокируя ручной ввод
+                if st.session_state.get("last_processed_file_key") != file_key:
+                    try:
+                        if tab2_uploaded_file.name.endswith('.csv'):
+                            df_up = pd.read_csv(tab2_uploaded_file, header=None, sep=";")
+                        else:
+                            df_up = pd.read_excel(tab2_uploaded_file, header=None)
+                        
+                        our_1c_norm_dict = {normalize_strict(row["Номенклатура АлгаДистрибьюшн факт"]): str(row["Номенклатура АлгаДистрибьюшн факт"]).strip() for _, row in mapping_clean.iterrows()}
+                        
+                        matched_count = 0
+                        for _, r in df_up.iterrows():
+                            if len(r) < 2: continue
+                            u_name = str(r.iloc[0]).strip()
+                            if not u_name or u_name.lower() in ["наименование", "товар", "итого", "всего", "номенклатура"]: 
+                                continue
+                            
+                            u_norm = normalize_strict(u_name)
+                            if u_norm in our_1c_norm_dict:
+                                exact_1c_name = our_1c_norm_dict[u_norm]
+                                u_boxes = parse_number(r.iloc[1], int) if len(r) > 1 else 0
+                                u_pcs = parse_number(r.iloc[2], int) if len(r) > 2 else 0
+                                
+                                # Приоритет коробкам. Если коробок 0, но есть штуки — пересчитываем в коробки
+                                if u_boxes > 0:
+                                    saved_boxes_dict[exact_1c_name] = u_boxes
+                                    matched_count += 1
+                                elif u_pcs > 0:
+                                    f_name = str(mapping_clean[mapping_clean["Номенклатура АлгаДистрибьюшн факт"] == exact_1c_name]["Наименование от производителя"].values[0]).strip()
+                                    f_name_key = normalize_strict(f_name)
+                                    factory_info = factory_cache_dict.get(f_name_key, {"box_size": 0, "price": 0.0})
+                                    b_size = int(factory_info["box_size"])
+                                    if b_size > 0:
+                                        saved_boxes_dict[exact_1c_name] = int(u_pcs // b_size)
+                                        matched_count += 1
+                        
+                        # Сохраняем результат распознавания в кэш менеджера
+                        with open(backup_filename, "w", encoding="utf-8") as sf:
+                            json.dump(saved_boxes_dict, sf, ensure_ascii=False)
+                        
+                        st.session_state["last_processed_file_key"] = file_key
+                        st.success(f"✅ Файл 1С успешно обработан! Распознано SKU: {matched_count}")
+                        st.rerun()
+                    except Exception as e:
+                        log_error("Вкладка2_Автозаполнение_1С", e)
+                        st.error("Ошибка при разборе загруженного файла 1С.")
+
+            # ==========================================
+            # ОТРИСОВКА ТАБЛИЦЫ БЛАНКА
+            # ==========================================
             table_rows = []
             for _, row in mapping_clean.iterrows():
                 our_name = str(row["Номенклатура АлгаДистрибьюшн факт"]).strip()
@@ -307,7 +367,7 @@ with tab2:
                 
                 factory_info = factory_cache_dict.get(f_name_key, {"box_size": 0, "price": 0.0})
                 
-                # Подтягиваем сохраненное количество ящиков из личного бэкапа менеджера
+                # Подтягиваем предзаполненное количество (из файла или старого ручного ввода)
                 default_boxes = int(saved_boxes_dict.get(our_name, 0))
                 
                 table_rows.append({
@@ -324,7 +384,7 @@ with tab2:
                 st.warning("⚠️ В файле mapping.csv пока нет связей.")
                 st.stop()
             
-            # ТАБЛИЦА ВВОДА
+            # ТАБЛИЦА ВВОДА (Отображается уже заполненной на основе файла)
             edited_df = st.data_editor(
                 df_form,
                 column_config={
@@ -340,9 +400,7 @@ with tab2:
                 hide_index=True
             )
 
-            # ==========================================
-            # ДВИЖОК ИНДИВИДУАЛЬНОГО АВТОСОХРАНЕНИЯ
-            # ==========================================
+            # ДВИЖОК ИНДИВИДУАЛЬНОГО АВТОСОХРАНЕНИЯ РУЧНЫХ КОРРЕКЦИЙ
             current_boxes_state = {row["Номенклатура (1С)"]: int(row["Заказ (Ящиков)"]) for _, row in edited_df.iterrows()}
             with open(backup_filename, "w", encoding="utf-8") as sf:
                 json.dump(current_boxes_state, sf, ensure_ascii=False)
@@ -400,9 +458,11 @@ with tab2:
                                 out_buf.seek(0)
                                 st.session_state["excel_ready_bytes"] = out_buf.getvalue()
                                 
-                                # Автоматически стираем личный бэкап, так как текущий заказ собран!
+                                # Автоматически стираем личный бэкап и сбрасываем триггер файла, так как заказ успешно собран и скачан!
                                 if os.path.exists(backup_filename):
                                     os.remove(backup_filename)
+                                if "last_processed_file_key" in st.session_state:
+                                    del st.session_state["last_processed_file_key"]
                             except Exception as e:
                                 log_error("Генерация_Завода", e)
                                 st.error("Ошибка записи данных в Excel.")
@@ -416,10 +476,10 @@ with tab2:
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
             else:
-                st.info("Корзина пуста. Начните вводить количество ящиков в таблице выше.")
+                st.info("Корзина пуста. Начните вводить количество ящиков или загрузите файл 1С выше.")
                 if "excel_ready_bytes" in st.session_state:
                     st.session_state["excel_ready_bytes"] = None
-            
+                    
         except Exception as e:
             log_error("Вкладка2_Рендеринг", e)
             st.error("Произошла ошибка при отрисовке бланка заказа.")
