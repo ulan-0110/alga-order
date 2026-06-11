@@ -312,7 +312,7 @@ with tab2:
                 
                 # Если файл еще не применен, показываем кнопку
                 if st.session_state.get("last_processed_file_key") != file_key:
-                    st.info("📄 Файл прочитан. Нажмите кнопку ниже, чтобы применить данные к корзине.")
+                    st.info("📄 Файл прочитан. Нажмите кнопку ниже, чтобы применить данные к корзине (старая корзина будет очищена).")
                     
                     if st.button("📥 Сформировать корзину из файла", type="primary"):
                         try:
@@ -323,22 +323,25 @@ with tab2:
                             
                             our_1c_norm_dict = {normalize_strict(row["Номенклатура АлгаДистрибьюшн факт"]): str(row["Номенклатура АлгаДистрибьюшн факт"]).strip() for _, row in mapping_clean.iterrows()}
                             
+                            # ЖЕСТКАЯ ОЧИСТКА КОРЗИНЫ ПЕРЕД ИМПОРТОМ НОВОГО ФАЙЛА
+                            saved_boxes_dict.clear()
                             matched_count = 0
+                            
                             for _, r in df_up.iterrows():
                                 if len(r) < 2: continue
                                 u_name = str(r.iloc[0]).strip()
-                                if not u_name or u_name.lower() in ["наименование", "товар", "итого", "всего", "номенклатура"]: 
+                                if not u_name or u_name.lower() in ["наименование", "товар", "итого", "всего", "номенклатура", "nan"]: 
                                     continue
                                 
                                 u_norm = normalize_strict(u_name)
                                 if u_norm in our_1c_norm_dict:
                                     exact_1c_name = our_1c_norm_dict[u_norm]
-                                    u_boxes = parse_number(r.iloc[1], int) if len(r) > 1 else 0
-                                    u_pcs = parse_number(r.iloc[2], int) if len(r) > 2 else 0
+                                    u_boxes = parse_number(r.iloc[1] if len(r) > 1 else 0, int)
+                                    u_pcs = parse_number(r.iloc[2] if len(r) > 2 else 0, int)
                                     
-                                    # Приоритет коробкам. Если коробок 0, но есть штуки — пересчитываем в коробки
+                                    # Если в файле 1С будут дубликаты строк, мы их плюсуем
                                     if u_boxes > 0:
-                                        saved_boxes_dict[exact_1c_name] = u_boxes
+                                        saved_boxes_dict[exact_1c_name] = saved_boxes_dict.get(exact_1c_name, 0) + u_boxes
                                         matched_count += 1
                                     elif u_pcs > 0:
                                         f_name = str(mapping_clean[mapping_clean["Номенклатура АлгаДистрибьюшн факт"] == exact_1c_name]["Наименование от производителя"].values[0]).strip()
@@ -346,20 +349,24 @@ with tab2:
                                         factory_info = factory_cache_dict.get(f_name_key, {"box_size": 0, "price": 0.0})
                                         b_size = int(factory_info["box_size"])
                                         if b_size > 0:
-                                            saved_boxes_dict[exact_1c_name] = int(u_pcs // b_size)
+                                            saved_boxes_dict[exact_1c_name] = saved_boxes_dict.get(exact_1c_name, 0) + int(u_pcs // b_size)
                                             matched_count += 1
                             
                             # 1. Сохраняем результат в файл бэкапа
                             with open(backup_filename, "w", encoding="utf-8") as sf:
                                 json.dump(saved_boxes_dict, sf, ensure_ascii=False)
                             
-                            # 2. КРИТИЧЕСКИ ВАЖНО: Сбрасываем кэш таблицы, чтобы старые ручные нули не перебили новые данные
+                            # 2. Сбрасываем кэш таблицы, чтобы виджет перерисовался с новыми данными
                             if "super_stable_editor" in st.session_state:
                                 del st.session_state["super_stable_editor"]
                             
                             st.session_state["last_processed_file_key"] = file_key
-                            st.success(f"✅ Файл 1С успешно обработан! Распознано SKU: {matched_count}")
-                            st.rerun()
+                            
+                            if matched_count > 0:
+                                st.success(f"✅ Файл 1С успешно обработан! Распознано SKU: {matched_count}")
+                            else:
+                                st.error("⚠️ Внимание: Ни одно наименование из файла не совпало с базой 1С. Проверь названия в загруженном документе.")
+                                
                         except Exception as e:
                             log_error("Вкладка2_Автозаполнение_1С", e)
                             st.error("Ошибка при разборе загруженного файла 1С.")
