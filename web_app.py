@@ -272,6 +272,8 @@ with tab2:
                 os.remove(backup_filename) # Чистим сейв ТЕКУЩЕГО пользователя при сбросе
             if "last_processed_file_key" in st.session_state:
                 del st.session_state["last_processed_file_key"]
+            if "super_stable_editor" in st.session_state:
+                del st.session_state["super_stable_editor"]
             st.success("База цен и связок успешно обновлена!")
             st.rerun()
 
@@ -370,6 +372,22 @@ with tab2:
                         except Exception as e:
                             log_error("Вкладка2_Автозаполнение_1С", e)
                             st.error("Ошибка при разборе загруженного файла 1С.")
+
+            # ==========================================
+            # КНОПКА ОЧИСТКИ КОРЗИНЫ (СБРОС КЭША)
+            # ==========================================
+            st.markdown("---")
+            col_clear_1, col_clear_2 = st.columns([8, 2])
+            with col_clear_2:
+                if st.button("🗑️ Очистить корзину", use_container_width=True):
+                    if os.path.exists(backup_filename):
+                        os.remove(backup_filename)
+                    if "super_stable_editor" in st.session_state:
+                        del st.session_state["super_stable_editor"]
+                    if "last_processed_file_key" in st.session_state:
+                        del st.session_state["last_processed_file_key"]
+                    saved_boxes_dict.clear() # Очищаем словарь в памяти
+                    st.rerun()
 
             # ==========================================
             # ОТРИСОВКА ТАБЛИЦЫ БЛАНКА
@@ -491,7 +509,7 @@ with tab2:
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
             else:
-                st.info("Корзина пуста. Начните вводить количество ящиков или загрузите файл 1С выше.")
+                st.info("Корзина пуста. Начните вводить количество ящиков в таблице или загрузите файл 1С выше.")
                 if "excel_ready_bytes" in st.session_state:
                     st.session_state["excel_ready_bytes"] = None
                     
